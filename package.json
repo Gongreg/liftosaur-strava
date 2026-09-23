@@ -1,0 +1,23 @@
+{
+  "name": "liftosaur-strava",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sync finished Liftosaur workouts to Strava as weight-training activities with sets, reps and weights",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "auth": "node src/cli.ts auth",
+    "sync": "node src/cli.ts sync",
+    "exercises": "node src/cli.ts exercises",
+    "types": "node src/cli.ts types",
+    "schedule": "sh launchd/install.sh",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}

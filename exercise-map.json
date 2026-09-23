@@ -1,0 +1,4 @@
+{
+  "//": "Liftosaur exercise name (as printed by `npm run exercises`) → Strava exercise type (`npm run types -- WORD`), or SKIP to leave it out. Overrides the built-in mapping.",
+  "//example": "\"Pendlay Row\": \"BENT_OVER_BARBELL_ROW\""
+}
