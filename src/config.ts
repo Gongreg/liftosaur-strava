@@ -52,6 +52,27 @@ export function requireSetting(value: string, name: string): string {
   return value;
 }
 
+/**
+ * Strava shows each workout at the UTC offset of this machine's time zone. Docker containers run on UTC unless TZ is
+ * set, and a misspelled TZ means UTC too, which would shift every workout.
+ */
+export function requireTimeZone(
+  env: NodeJS.ProcessEnv = process.env,
+  // Undefined when TZ names a zone Node doesn't know.
+  zone: string | undefined = Intl.DateTimeFormat().resolvedOptions().timeZone
+): void {
+  const known = zone !== undefined && zone !== "Etc/Unknown";
+  if (env.TZ && !known) {
+    throw new FatalError(`TZ=${env.TZ} isn't a time zone. Use one like Europe/Vilnius in ${join(ROOT, ".env")}.`);
+  }
+  if (!env.TZ && (!known || zone === "UTC" || zone === "Etc/UTC")) {
+    throw new FatalError(
+      `This machine's time zone is UTC, so Strava would show your workouts at the wrong time. ` +
+        `Add yours to ${join(ROOT, ".env")}, e.g. TZ=Europe/Vilnius (or TZ=UTC if UTC is right).`
+    );
+  }
+}
+
 export function readJson<T>(path: string): T | undefined {
   if (!existsSync(path)) {
     return undefined;

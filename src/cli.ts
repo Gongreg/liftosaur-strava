@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
-import { loadConfig, type Config } from "./config.ts";
+import { loadConfig, requireTimeZone, type Config } from "./config.ts";
 import { STRAVA_EXERCISE_TYPES } from "./stravaExerciseTypes.ts";
 import { connectStrava } from "./strava.ts";
 import { defaultSince, formatLocal, listExercises, sync } from "./sync.ts";
@@ -35,6 +35,11 @@ async function main(): Promise<void> {
   const [command, ...words] = positionals;
   const config = loadConfig();
 
+  if (words.length > 0 && command !== "types" && command !== "help") {
+    // Options after a lone `--` arrive as plain words, and `sync -- --dry-run` mustn't turn into a real sync.
+    throw new Error(`Unexpected argument "${words[0]}" (options after a lone "--" count as arguments).\n\n${USAGE}`);
+  }
+
   if (values.help || command === undefined || command === "help") {
     console.log(USAGE);
   } else if (command === "auth") {
@@ -42,6 +47,7 @@ async function main(): Promise<void> {
     const who = [tokens.athlete?.firstname, tokens.athlete?.lastname].filter(Boolean).join(" ");
     console.log(`Connected to Strava${who ? ` as ${who}` : ""}. Next: npm run sync -- --dry-run`);
   } else if (command === "sync") {
+    requireTimeZone();
     const since = values.since ? parseDate(values.since) : defaultSince(config);
     const recordId = values.id === undefined ? undefined : Number(values.id);
     if (recordId !== undefined && !Number.isInteger(recordId)) {
@@ -112,7 +118,7 @@ function parseDate(value: string): Date {
   return date;
 }
 
-/** Surfaces failures of unattended (launchd) runs as a macOS notification. */
+/** Surfaces failures of unattended (launchd) runs as a macOS notification. On Unraid, unraid/sync.sh does this. */
 function notify(message: string): void {
   if (process.platform === "darwin" && !process.stdout.isTTY) {
     spawnSync("osascript", ["-e", `display notification ${JSON.stringify(message)} with title "Liftosaur → Strava"`]);

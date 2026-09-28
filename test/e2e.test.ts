@@ -1,11 +1,15 @@
 // Runs `sync` against a local stand-in for the Liftosaur and Strava APIs.
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it, mock } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { loadConfig, readJson, writeJson, type Config } from "../src/config.ts";
 import { defaultSince, sync, type SyncOptions } from "../src/sync.ts";
 
@@ -31,6 +35,7 @@ const api = {
   uploads: [] as ReceivedUpload[],
   polls: new Map<string, number>(),
   historyRequests: [] as string[],
+  hang: false, // Liftosaur never answers history requests
   tokenRequests: [] as URLSearchParams[],
 };
 
@@ -56,6 +61,9 @@ const server = createServer(async (request, response) => {
   if (url.pathname === "/api/v1/history") {
     assert.equal(request.headers.authorization, "Bearer lftsk_test");
     api.historyRequests.push(url.search);
+    if (api.hang) {
+      return;
+    }
     // Newest first, ids below the cursor, pages of at most two so the client has to follow the cursor.
     const cursor = url.searchParams.get("cursor");
     const newestFirst = [...api.history].sort((a, b) => b.id - a.id);
@@ -135,6 +143,7 @@ beforeEach(() => {
   api.uploads = [];
   api.polls.clear();
   api.historyRequests = [];
+  api.hang = false;
   api.tokenRequests = [];
   output.length = 0;
 });
@@ -307,4 +316,45 @@ describe("sync end to end", () => {
     writeFileSync(join(config.dataDir, "sync.lock"), "999999999");
     assert.deepEqual(await run(config), { uploaded: 1, alreadySynced: 0, problems: 0 });
   });
+
+  it("takes over a lock that stopped being refreshed, even if its PID is running", async () => {
+    // In a container every run is PID 1, so the lock of a run that was killed names a running PID.
+    api.history = [deadlift];
+    const config = setup();
+    const lockFile = join(config.dataDir, "sync.lock");
+    writeFileSync(lockFile, String(process.pid));
+    const refreshed = new Date(Date.now() - 6 * 60_000);
+    utimesSync(lockFile, refreshed, refreshed);
+    assert.deepEqual(await run(config), { uploaded: 1, alreadySynced: 0, problems: 0 });
+    assert.equal(existsSync(lockFile), false);
+  });
+
+  for (const [signal, exitCode] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const) {
+    it(`releases the lock on ${signal}`, { timeout: 10_000 }, async () => {
+      api.hang = true;
+      const config = setup();
+      const lockFile = join(config.dataDir, "sync.lock");
+      const syncModule = pathToFileURL(join(import.meta.dirname, "../src/sync.ts")).href;
+      const child = spawn(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `const { sync } = await import(${JSON.stringify(syncModule)});
+        const options = { since: new Date(0), dryRun: false, force: false, retryFailed: false };
+        await sync(${JSON.stringify(config)}, options);`,
+      ]);
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      // The run asks Liftosaur for workouts once it holds the lock, and then waits forever.
+      while (api.historyRequests.length === 0 && child.exitCode === null) {
+        await sleep(10);
+      }
+      assert.ok(existsSync(lockFile), stderr);
+      child.kill(signal);
+      assert.deepEqual(await once(child, "exit"), [exitCode, null]);
+      assert.equal(existsSync(lockFile), false);
+    });
+  }
 });

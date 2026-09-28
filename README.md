@@ -6,7 +6,8 @@ set's exercise, reps and weight. Strava then shows the exercise list, volume, to
 It reads your history through the [Liftosaur REST API](https://www.liftosaur.com/doc/api) and uploads it with
 [Strava's JSON strength-training upload format](https://developers.strava.com/docs/uploads/) (added May 2026). Both APIs
 need a premium subscription. It runs on plain Node.js (22.18+, runs the TypeScript directly) and has no runtime
-dependencies.
+dependencies. Machines without Node, such as an Unraid server, can run it in Docker (see
+[Running it on Unraid](#running-it-on-unraid)).
 
 ## Setup
 
@@ -69,6 +70,43 @@ launchctl bootout gui/$(id -u)/local.liftosaur-strava      # stop and unload
 When a scheduled run can't sync a workout (e.g. an unmapped exercise), it shows a macOS notification. Run
 `npm run sync` to see why.
 
+## Running it on Unraid
+
+Unraid doesn't have Node.js, so `unraid/run.sh` runs the commands in the official Node.js Docker image
+(`node:24-alpine`), with this folder mounted into it: `.env`, `exercise-map.json` and `data/` are the same files. It
+takes what `npm run` takes, so `npm run sync -- --dry-run` becomes `unraid/run.sh sync -- --dry-run`. There's no image
+to build, and it works on any machine with Docker.
+
+1. Copy this folder to the server, e.g. to `/mnt/user/appdata/liftosaur-strava`:
+
+   ```sh
+   rsync -a --exclude node_modules --exclude data ./ root@tower:/mnt/user/appdata/liftosaur-strava/
+   ```
+
+   To move an existing setup, leave out `--exclude data` so the Strava connection and the sync state come along, and
+   stop syncing on the old machine. Otherwise both upload the same workouts. To update the code later, copy just
+   `src` and `unraid`.
+2. Fill in `.env` (see [Setup](#setup)) and add your time zone, e.g. `TZ=Europe/Vilnius`. Containers run on UTC, which
+   would put your workouts at the wrong time on Strava, so `sync` stops until `TZ` is set.
+3. Connect Strava, unless you copied `data/`. Strava sends the browser back to `127.0.0.1:8723`, so run `auth` through
+   an SSH tunnel from the computer with the browser, and open the link it prints there:
+
+   ```sh
+   ssh -t -L 8723:127.0.0.1:8723 root@tower /mnt/user/appdata/liftosaur-strava/unraid/run.sh auth
+   ```
+4. On the server, in that folder: `unraid/run.sh exercises`, `unraid/run.sh sync -- --dry-run`, then
+   `unraid/run.sh sync`.
+5. Schedule it with the User Scripts plugin (from Community Applications): add a script with this content and set it
+   to *Scheduled Hourly*.
+
+   ```sh
+   #!/bin/bash
+   /mnt/user/appdata/liftosaur-strava/unraid/sync.sh
+   ```
+
+   `unraid/sync.sh` appends every run to `data/sync.log`. When a workout can't be synced, it sends an Unraid
+   notification with the reason.
+
 ## Behaviour
 
 - Weights are sent in kg; Strava shows them in your preferred units. Bodyweight and assisted (negative weight) sets
@@ -87,7 +125,8 @@ When a scheduled run can't sync a workout (e.g. an unmapped exercise), it shows 
   `npm run sync -- --id <id> --retry-failed`.
 - When Strava's 15-minute rate limit is hit, the sync waits for the next window. Once the daily limit is used up, it
   stops and the next run continues.
-- A sync that starts while another one is running (say, a manual run during the scheduled one) skips.
+- A sync that starts while another one is running (say, a manual run during the scheduled one) skips. A run that
+  was killed outright (say, by a power cut) holds up the next ones for at most 5 minutes.
 - Strava is moving its API to `https://api-v3.strava.com` (available from 2027-01-04). Set `STRAVA_API_BASE` in
   `.env` to switch before the old URL goes away.
 

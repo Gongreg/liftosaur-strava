@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { loadConfig, writeJson } from "../src/config.ts";
+import { loadConfig, requireTimeZone, writeJson } from "../src/config.ts";
 import { parseWorkout } from "../src/parse.ts";
 import { rateLimitDelayMs } from "../src/strava.ts";
 import { buildActivity, defaultSince, duplicateActivityId } from "../src/sync.ts";
@@ -111,6 +111,23 @@ describe("rateLimitDelayMs", () => {
     assert.equal(rateLimitDelayMs(headers, now), 7.5 * 60_000 + 5_000);
     headers.set("x-ratelimit-usage", "201,2000");
     assert.equal(rateLimitDelayMs(headers, now), undefined);
+  });
+});
+
+describe("requireTimeZone", () => {
+  it("stops on UTC unless TZ asks for it, and on time zones Node doesn't know", () => {
+    requireTimeZone({}, "Europe/Vilnius");
+    requireTimeZone({ TZ: "UTC" }, "UTC");
+    // What Docker containers report without TZ, or with an empty one.
+    assert.throws(() => requireTimeZone({}, "UTC"), /time zone is UTC/);
+    assert.throws(() => requireTimeZone({ TZ: "" }, "Etc/Unknown"), /time zone is UTC/);
+    // A misspelled TZ means UTC as well, and leaves Node without a time zone name.
+    process.env.TZ = "Europe/Vilnus";
+    try {
+      assert.throws(() => requireTimeZone(), /TZ=Europe\/Vilnus isn't a time zone/);
+    } finally {
+      process.env.TZ = "Europe/Vilnius";
+    }
   });
 });
 

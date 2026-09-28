@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { constants } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { FatalError, readJson, writeJson, type Config } from "./config.ts";
@@ -360,26 +361,54 @@ async function run(config: Config, options: SyncOptions, result: SyncResult): Pr
   }
 }
 
-/** Keeps a manual run and the scheduled one from uploading the same workout. Undefined while another run holds it. */
+const LOCK_REFRESH_MS = 60_000;
+const LOCK_STALE_MS = 5 * 60_000;
+
+/**
+ * Keeps a manual run and the scheduled one from uploading the same workout. Undefined while another run holds it.
+ *
+ * The PID in the lock can't prove its run is alive: in a container every run gets the same PID (node is PID 1).
+ * So the holder refreshes the lock every minute and releases it on Ctrl-C and `docker stop`, and a lock that
+ * wasn't refreshed for 5 minutes was left by a run that got killed.
+ */
 function lock(config: Config): (() => void) | undefined {
   const path = join(config.dataDir, "sync.lock");
   mkdirSync(config.dataDir, { recursive: true });
   for (;;) {
     try {
       writeFileSync(path, String(process.pid), { flag: "wx" });
-      return () => rmSync(path, { force: true });
+      break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
     }
     const pid = Number(readFileSync(path, "utf8"));
-    if (pid > 0 && isRunning(pid)) {
+    const refreshed = Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS;
+    if (pid > 0 && isRunning(pid) && refreshed) {
       return undefined;
     }
-    // Left behind by a run that crashed.
+    // Left behind by a run that crashed or was killed.
     rmSync(path, { force: true });
   }
+
+  const refresh = setInterval(() => {
+    const now = new Date();
+    try {
+      utimesSync(path, now, now);
+    } catch {}
+  }, LOCK_REFRESH_MS).unref();
+  const release = (): void => {
+    clearInterval(refresh);
+    process.off("SIGINT", onSignal).off("SIGTERM", onSignal);
+    rmSync(path, { force: true });
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    release();
+    process.exit(128 + constants.signals[signal]);
+  };
+  process.once("SIGINT", onSignal).once("SIGTERM", onSignal);
+  return release;
 }
 
 function isRunning(pid: number): boolean {
